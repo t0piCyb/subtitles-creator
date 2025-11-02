@@ -182,7 +182,7 @@ async def transcribe_video(file: UploadFile = File(...)):
                     # faster-whisper transcribe returns (segments, info) tuple
                     segments, info = model.transcribe(
                         str(video_path),
-                        language='en',  # Specify language to skip detection
+                        language=None,  # Auto-detect language (French, English, Spanish, etc.)
                         word_timestamps=True,  # Enable word-level timestamps
                         vad_filter=False,  # Disable VAD filtering
                         beam_size=5
@@ -479,12 +479,12 @@ async def process_video(file: UploadFile = File(...)):
                 logger.info("Transcription worker started")
                 segments, info = model.transcribe(
                     str(video_path),
-                    language='en',
+                    language=None,  # Auto-detect language (French, English, Spanish, etc.)
                     word_timestamps=True,
                     vad_filter=False,
                     beam_size=5
                 )
-                logger.info(f"Detected language: {info.language}")
+                logger.info(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
                 segments_list = list(segments)
                 logger.info(f"Transcription completed: {len(segments_list)} segments")
                 result_holder['result'] = segments_list
