@@ -1,0 +1,22 @@
+services:
+  subtitles-creator:
+    build: .
+    container_name: subtitles-creator
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./processed:/app/processed
+      - ./models:/app/models
+    environment:
+      - WHISPER_MODEL=base
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+        reservations:
+          cpus: "2"
+          memory: 4G
+    shm_size: 2gb

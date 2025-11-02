@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TikTok-Style Subtitle Creator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            width: 100%;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .upload-section {
+            border: 3px dashed #667eea;
+            border-radius: 15px;
+            padding: 60px 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 30px;
+        }
+
+        .upload-section:hover {
+            border-color: #764ba2;
+            background: #f8f9ff;
+        }
+
+        .upload-section.dragover {
+            background: #f0f0ff;
+            border-color: #764ba2;
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        .upload-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+
+        .processing {
+            display: none;
+            text-align: center;
+            padding: 40px;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .progress-text {
+            font-size: 1.2em;
+            color: #667eea;
+            font-weight: bold;
+            margin-top: 20px;
+        }
+
+        .progress-details {
+            color: #666;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+
+        .result {
+            display: none;
+            text-align: center;
+            padding: 40px;
+        }
+
+        .success-icon {
+            font-size: 5em;
+            color: #4caf50;
+            margin-bottom: 20px;
+        }
+
+        .download-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 20px 50px;
+            border-radius: 30px;
+            font-size: 1.3em;
+            cursor: pointer;
+            transition: transform 0.2s;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            margin: 20px 0;
+        }
+
+        .download-btn:hover {
+            transform: scale(1.05);
+        }
+
+        .new-video-btn {
+            background: white;
+            color: #667eea;
+            border: 2px solid #667eea;
+            padding: 12px 30px;
+            border-radius: 25px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 10px;
+        }
+
+        .new-video-btn:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .error {
+            display: none;
+            background: #fee;
+            color: #c33;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+            text-align: center;
+        }
+
+        .stats {
+            background: #f8f9ff;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+        }
+
+        .stats-item {
+            display: inline-block;
+            margin: 0 20px;
+            color: #666;
+        }
+
+        .stats-value {
+            font-weight: bold;
+            color: #667eea;
+            font-size: 1.2em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎬 TikTok-Style Subtitle Creator</h1>
+            <p>Upload a video and get it back with burned-in subtitles</p>
+        </div>
+
+        <div class="content">
+            <!-- Upload Section -->
+            <div class="upload-section" id="uploadSection">
+                <div class="upload-icon">📹</div>
+                <h2 style="margin: 20px 0; color: #667eea;">Drop your video here</h2>
+                <p style="color: #666; font-size: 1.1em;">or click to browse</p>
+                <p style="color: #999; margin-top: 10px; font-size: 0.9em;">Supported: MP4, MOV, AVI, WebM</p>
+                <input type="file" id="fileInput" accept="video/*">
+            </div>
+
+            <!-- Processing Section -->
+            <div class="processing" id="processing">
+                <div class="spinner"></div>
+                <div class="progress-text" id="progressText">Processing your video...</div>
+                <div class="progress-details" id="progressDetails">
+                    This may take a few minutes depending on video length
+                </div>
+            </div>
+
+            <!-- Result Section -->
+            <div class="result" id="result">
+                <div class="success-icon">✅</div>
+                <h2 style="color: #4caf50; margin-bottom: 20px;">Video Ready!</h2>
+                <p style="color: #666; margin-bottom: 30px;">
+                    Your video has been processed with TikTok-style subtitles
+                </p>
+                <div class="stats" id="stats"></div>
+                <a id="downloadLink" href="#" download>
+                    <button class="download-btn">📥 Download Video</button>
+                </a>
+                <br>
+                <button class="new-video-btn" onclick="resetPage()">Process Another Video</button>
+            </div>
+
+            <!-- Error Section -->
+            <div class="error" id="error"></div>
+        </div>
+    </div>
+
+    <script>
+        const uploadSection = document.getElementById('uploadSection');
+        const fileInput = document.getElementById('fileInput');
+        const processing = document.getElementById('processing');
+        const result = document.getElementById('result');
+        const error = document.getElementById('error');
+        const progressText = document.getElementById('progressText');
+        const progressDetails = document.getElementById('progressDetails');
+        const downloadLink = document.getElementById('downloadLink');
+        const stats = document.getElementById('stats');
+
+        // Click to upload
+        uploadSection.addEventListener('click', () => fileInput.click());
+
+        // Drag and drop
+        uploadSection.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadSection.classList.add('dragover');
+        });
+
+        uploadSection.addEventListener('dragleave', () => {
+            uploadSection.classList.remove('dragover');
+        });
+
+        uploadSection.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadSection.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        // File input change
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        async function handleFile(file) {
+            if (!file.type.startsWith('video/')) {
+                showError('Please select a valid video file');
+                return;
+            }
+
+            // Show processing UI
+            uploadSection.style.display = 'none';
+            error.style.display = 'none';
+            processing.style.display = 'block';
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const steps = [
+                'Uploading video...',
+                'Transcribing audio...',
+                'Extracting word timestamps...',
+                'Generating TikTok-style subtitles...',
+                'Burning subtitles into video...',
+                'Almost done...'
+            ];
+
+            let stepIndex = 0;
+            const stepInterval = setInterval(() => {
+                if (stepIndex < steps.length) {
+                    progressText.textContent = steps[stepIndex];
+                    stepIndex++;
+                }
+            }, 5000);
+
+            try {
+                const response = await fetch('/api/process-video', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                clearInterval(stepInterval);
+
+                if (!response.ok) {
+                    let errorMessage = 'Processing failed';
+                    try {
+                        const errorData = await response.json();
+                        errorMessage = errorData.detail || errorMessage;
+                    } catch (e) {
+                        errorMessage = `Server error (${response.status})`;
+                    }
+                    throw new Error(errorMessage);
+                }
+
+                const data = await response.json();
+
+                // Show success
+                processing.style.display = 'none';
+                result.style.display = 'block';
+
+                // Setup download link
+                downloadLink.href = data.download_url;
+                downloadLink.download = 'subtitled_video.mp4';
+
+                // Show stats
+                stats.innerHTML = `
+                    <div class="stats-item">
+                        <div>Words Processed</div>
+                        <div class="stats-value">${data.word_count}</div>
+                    </div>
+                    <div class="stats-item">
+                        <div>Original File</div>
+                        <div class="stats-value">${(file.size / (1024*1024)).toFixed(2)} MB</div>
+                    </div>
+                `;
+
+            } catch (err) {
+                clearInterval(stepInterval);
+                processing.style.display = 'none';
+                uploadSection.style.display = 'block';
+                showError(err.message);
+                console.error('Processing error:', err);
+            }
+        }
+
+        function showError(message) {
+            error.style.display = 'block';
+            error.innerHTML = `<strong>❌ Error:</strong> ${message}`;
+        }
+
+        function resetPage() {
+            result.style.display = 'none';
+            uploadSection.style.display = 'block';
+            error.style.display = 'none';
+            fileInput.value = '';
+        }
+    </script>
+</body>
+</html>
