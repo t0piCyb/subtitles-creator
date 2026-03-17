@@ -24,7 +24,9 @@ image = (
     )
     .pip_install(
         "faster-whisper==1.0.3",
+        "requests",
     )
+    .run_commands("rm -rf /root/.cache")
 )
 
 # Cache Whisper models across invocations
