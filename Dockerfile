@@ -1,35 +1,30 @@
 FROM python:3.11-slim
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    git \
+    fonts-liberation \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
 WORKDIR /app
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Install Slabo 27px font
+RUN mkdir -p /usr/share/fonts/truetype/slabo && \
+    curl -fsSL -o /usr/share/fonts/truetype/slabo/Slabo27px-Regular.ttf \
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/slabo27px/Slabo27px-Regular.ttf" && \
+    fc-cache -f -v
 
-# Install Python dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
 COPY app/ ./app/
 COPY static/ ./static/
 
-# Create directories
-RUN mkdir -p uploads models
+RUN mkdir -p uploads processed
 
-# Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
 ENV WHISPER_MODEL=base
-ENV PYTHONFAULTHANDLER=1
 
-# Expose port
 EXPOSE 8000
 
-# Run the application with explicit error handling
-CMD ["sh", "-c", "ulimit -c unlimited && uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 300"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "300"]

@@ -1,16 +1,16 @@
 services:
-  subtitles-creator:
+  app:
     build: .
-    container_name: subtitles-creator
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./uploads:/app/uploads
-      - ./processed:/app/processed
-      - ./models:/app/models
-    environment:
-      - WHISPER_MODEL=base
+    container_name: subtitles-app
     restart: unless-stopped
+    volumes:
+      - uploads:/app/uploads
+      - processed:/app/processed
+      - whisper-models:/root/.cache
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-base}
+    networks:
+      - internal
     deploy:
       resources:
         limits:
@@ -20,3 +20,49 @@ services:
           cpus: "2"
           memory: 4G
     shm_size: 2gb
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  nginx:
+    image: nginx:alpine
+    container_name: subtitles-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro
+      - certbot-webroot:/var/www/certbot:ro
+      - certbot-certs:/etc/letsencrypt:ro
+    environment:
+      DOMAIN: ${DOMAIN:-subtitles.topilo.dev}
+    networks:
+      - internal
+    depends_on:
+      app:
+        condition: service_healthy
+
+  certbot:
+    image: certbot/certbot
+    container_name: subtitles-certbot
+    volumes:
+      - certbot-webroot:/var/www/certbot
+      - certbot-certs:/etc/letsencrypt
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'"
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  uploads:
+  processed:
+  whisper-models:
+  certbot-webroot:
+  certbot-certs:
