@@ -15,12 +15,9 @@ fi
 
 echo "=== Initialisation SSL pour $DOMAIN ==="
 
-# Step 1: Démarrer nginx en mode HTTP-only pour le challenge ACME
-echo "[1/4] Démarrage nginx en mode HTTP..."
-DOMAIN=$DOMAIN docker compose -f docker-compose.yml up -d app
-
-# Temporairement utiliser la config init (HTTP-only)
-docker compose -f docker-compose.yml run -d \
+# Step 1: Démarrer un nginx temporaire HTTP-only pour le challenge ACME
+echo "[1/4] Démarrage nginx temporaire en mode HTTP..."
+docker run -d \
     --name subtitles-nginx-init \
     -p 80:80 \
     -v "$(pwd)/nginx/nginx.init.conf:/etc/nginx/templates/default.conf.template:ro" \
@@ -33,7 +30,11 @@ sleep 3
 
 # Step 2: Obtenir le certificat
 echo "[3/4] Obtention du certificat Let's Encrypt..."
-docker compose run --rm certbot certonly \
+docker run --rm \
+    -v "subtitles-creator_certbot-webroot:/var/www/certbot" \
+    -v "subtitles-creator_certbot-certs:/etc/letsencrypt" \
+    --network host \
+    certbot/certbot certonly \
     --webroot \
     -w /var/www/certbot \
     -d "$DOMAIN" \
@@ -42,10 +43,10 @@ docker compose run --rm certbot certonly \
     --no-eff-email \
     --force-renewal
 
-# Step 3: Arrêter le nginx temporaire et démarrer le vrai
+# Step 3: Arrêter le nginx temporaire et démarrer le vrai stack
 echo "[4/4] Redémarrage avec la config SSL..."
 docker stop subtitles-nginx-init && docker rm subtitles-nginx-init
-docker compose up -d
+DOMAIN=$DOMAIN docker compose up -d
 
 echo ""
 echo "=== Terminé ! ==="
