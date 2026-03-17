@@ -4,12 +4,13 @@ import uuid
 import json
 import logging
 import subprocess
+import threading
 from pathlib import Path
 from typing import List, Dict
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Body
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
 
@@ -33,6 +34,9 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 PROCESSED_DIR = Path("processed")
 PROCESSED_DIR.mkdir(exist_ok=True)
 
+# Background job progress tracking: {file_id: {progress: int, status: str, error: str|None, size_mb: float|None}}
+jobs: Dict[str, Dict] = {}
+
 # Load Whisper model
 MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
 logger.info(f"Loading Whisper model: {MODEL_NAME}")
@@ -43,7 +47,7 @@ logger.info("Model loaded")
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     with open("static/index.html", "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read())
+        return HTMLResponse(content=f.read(), headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/api/upload")
@@ -154,14 +158,13 @@ def merge_compound_words(words: List[Dict]) -> List[Dict]:
 
 @app.post("/api/generate")
 async def generate_video(payload: dict = Body(...)):
-    """Burn subtitles into video with SSE progress streaming."""
+    """Start burning subtitles into video as a background job."""
     file_id = payload.get("file_id")
-    subtitles = payload.get("subtitles")
+    subs = payload.get("subtitles")
 
-    if not file_id or not subtitles:
+    if not file_id or not subs:
         raise HTTPException(status_code=400, detail="file_id et subtitles requis")
 
-    # Find source video
     video_path = find_video(file_id)
     if not video_path:
         raise HTTPException(status_code=404, detail="Vidéo source introuvable")
@@ -172,16 +175,14 @@ async def generate_video(payload: dict = Body(...)):
     if output_path.exists():
         output_path.unlink()
 
-    # Detect video dimensions for ASS sizing
     width, height = get_video_dimensions(video_path)
-
-    # Generate ASS adapted to video orientation
-    generate_ass(subtitles, ass_path, width, height)
-
-    # Get video duration for progress calculation
+    generate_ass(subs, ass_path, width, height)
     duration = get_video_duration(video_path)
 
-    def stream_progress():
+    jobs.pop(file_id, None)
+    jobs[file_id] = {"progress": 0, "status": "encoding", "error": None, "size_mb": None}
+
+    def run_ffmpeg():
         try:
             cmd = [
                 "ffmpeg",
@@ -206,7 +207,7 @@ async def generate_video(payload: dict = Body(...)):
                         time_ms = int(line.split("=")[1])
                         if duration > 0:
                             pct = min(99, int((time_ms / 1000 / duration) * 100))
-                            yield f"data: {json.dumps({'progress': pct, 'status': 'encoding'})}\n\n"
+                            jobs[file_id]["progress"] = pct
                     except (ValueError, ZeroDivisionError):
                         pass
                 elif line.startswith("progress=end"):
@@ -217,20 +218,35 @@ async def generate_video(payload: dict = Body(...)):
             if proc.returncode != 0:
                 stderr = proc.stderr.read()
                 logger.error(f"FFmpeg error: {stderr[-500:]}")
-                yield f"data: {json.dumps({'error': 'FFmpeg a échoué'})}\n\n"
+                jobs[file_id].update(status="error", error="FFmpeg a échoué")
             else:
                 size_mb = output_path.stat().st_size / (1024 * 1024)
                 logger.info(f"Vidéo générée: {output_path} ({size_mb:.1f} MB)")
-                yield f"data: {json.dumps({'progress': 100, 'status': 'done', 'download_url': f'/api/download/{file_id}', 'size_mb': round(size_mb, 1)})}\n\n"
+                jobs[file_id].update(progress=100, status="done", size_mb=round(size_mb, 1))
 
         except Exception as e:
             logger.error(f"Erreur génération: {e}")
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            jobs[file_id].update(status="error", error=str(e))
         finally:
             if ass_path.exists():
                 ass_path.unlink()
 
-    return StreamingResponse(stream_progress(), media_type="text/event-stream")
+    threading.Thread(target=run_ffmpeg, daemon=True).start()
+
+    return JSONResponse(content={"started": True, "file_id": file_id})
+
+
+@app.get("/api/progress/{file_id}")
+async def get_progress(file_id: str):
+    """Poll encoding progress for a background job."""
+    job = jobs.get(file_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job introuvable")
+
+    result = dict(job)
+    if job["status"] == "done":
+        result["download_url"] = f"/api/download/{file_id}"
+    return JSONResponse(content=result)
 
 
 @app.get("/api/video/{file_id}")
@@ -259,6 +275,7 @@ async def download_video(file_id: str):
 @app.delete("/api/cleanup/{file_id}")
 async def cleanup(file_id: str):
     """Clean up all files for a given file_id."""
+    jobs.pop(file_id, None)
     count = 0
     for directory in [UPLOAD_DIR, PROCESSED_DIR]:
         for f in directory.glob(f"{file_id}*"):
