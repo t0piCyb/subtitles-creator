@@ -285,12 +285,79 @@
 
         /* Mobile */
         @media (max-width: 768px) {
+            .header { padding: 12px 16px; }
+            .header h1 { font-size: 1em; }
+
+            .upload-zone { padding: 50px 24px; }
+            .upload-zone h2 { font-size: 1.2em; }
+            .upload-icon { font-size: 2.4em; }
+
+            #view-editor { height: auto; min-height: calc(100vh - 52px); }
+
             .editor-layout {
                 grid-template-columns: 1fr;
-                grid-template-rows: 300px 1fr;
+                grid-template-rows: auto 1fr auto;
+                height: auto;
+                min-height: calc(100vh - 52px);
             }
-            .subs-panel { order: 2; border-right: none; border-top: 1px solid #2a2a2a; }
+
             .preview-panel { order: 1; }
+
+            .video-container {
+                padding: 8px;
+                min-height: 220px;
+                max-height: 280px;
+            }
+
+            .preview-actions { padding: 10px 12px; gap: 6px; }
+
+            .subs-panel {
+                order: 2;
+                border-right: none;
+                border-top: 1px solid #2a2a2a;
+                max-height: 50vh;
+                min-height: 200px;
+            }
+
+            .subs-toolbar { padding: 8px 12px; }
+
+            .sub-item {
+                grid-template-columns: 54px 1fr 54px 28px;
+                gap: 4px;
+                padding: 5px 4px;
+            }
+
+            .sub-item input[type="text"] {
+                font-size: .8em;
+                padding: 5px 6px;
+            }
+
+            .time-input {
+                width: 54px;
+                font-size: .65em;
+                padding: 4px 2px;
+            }
+
+            .btn { padding: 10px 16px; font-size: .85em; }
+            .btn-sm { padding: 5px 10px; font-size: .75em; }
+
+            .subtitle-preview { font-size: .9em; bottom: 30px; }
+
+            .progress-bar-container { height: 32px; }
+
+            .processing-text { font-size: 1em; padding: 0 20px; text-align: center; }
+        }
+
+        /* Small phones */
+        @media (max-width: 380px) {
+            .sub-item {
+                grid-template-columns: 46px 1fr 46px 24px;
+                gap: 3px;
+            }
+
+            .time-input { width: 46px; font-size: .6em; }
+
+            .video-container { max-height: 220px; }
         }
     </style>
 </head>

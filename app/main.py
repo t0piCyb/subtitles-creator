@@ -172,8 +172,11 @@ async def generate_video(payload: dict = Body(...)):
     if output_path.exists():
         output_path.unlink()
 
-    # Generate ASS
-    generate_ass(subtitles, ass_path)
+    # Detect video dimensions for ASS sizing
+    width, height = get_video_dimensions(video_path)
+
+    # Generate ASS adapted to video orientation
+    generate_ass(subtitles, ass_path, width, height)
 
     # Get video duration for progress calculation
     duration = get_video_duration(video_path)
@@ -292,21 +295,50 @@ def get_video_duration(video_path: Path) -> float:
         return 0
 
 
-def generate_ass(subtitles: List[Dict], output_path: Path) -> None:
-    """Generate ASS subtitle file with Slabo 27px font, yellow text, word-by-word."""
-    # ASS color format: &HAABBGGRR
-    # Yellow = &H0000FFFF (R=FF, G=FF, B=00)
-    header = """[Script Info]
+def get_video_dimensions(video_path: Path) -> tuple[int, int]:
+    """Get video width and height using ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height",
+             "-of", "csv=p=0:s=x", str(video_path)],
+            capture_output=True, text=True, timeout=10,
+        )
+        w, h = result.stdout.strip().split("x")
+        return int(w), int(h)
+    except Exception:
+        return 1920, 1080
+
+
+def generate_ass(subtitles: List[Dict], output_path: Path, width: int = 1920, height: int = 1080) -> None:
+    """Generate ASS subtitle file adapted to video orientation."""
+    is_vertical = height > width
+
+    if is_vertical:
+        # Vertical (9:16): smaller font, lower position, PlayRes matches vertical
+        play_res_x, play_res_y = 1080, 1920
+        font_size = 52
+        margin_v = 250
+        outline = 3
+    else:
+        # Horizontal (16:9): standard
+        play_res_x, play_res_y = 1920, 1080
+        font_size = 72
+        margin_v = 80
+        outline = 4
+
+    # ASS color format: &HAABBGGRR — Yellow = &H0000FFFF
+    header = f"""[Script Info]
 Title: Subtitles
 ScriptType: v4.00+
 WrapStyle: 0
-PlayResX: 1920
-PlayResY: 1080
+PlayResX: {play_res_x}
+PlayResY: {play_res_y}
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Slabo 27px,72,&H0000FFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,4,2,2,10,10,80,1
+Style: Default,Slabo 27px,{font_size},&H0000FFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{outline},2,2,10,10,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -323,7 +355,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         f.write("\n".join(lines))
         f.write("\n")
 
-    logger.info(f"ASS généré: {len(lines)} entrées")
+    orientation = "vertical" if is_vertical else "horizontal"
+    logger.info(f"ASS généré: {len(lines)} entrées ({orientation} {width}x{height}, font={font_size})")
 
 
 def format_ass_time(seconds: float) -> str:
