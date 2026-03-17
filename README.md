@@ -56,6 +56,49 @@ docker compose logs -f nginx     # Logs nginx
 docker compose ps                # État des services
 ```
 
+## Modal (compute cloud, optionnel)
+
+Par défaut, la transcription Whisper et le burn FFmpeg tournent sur le VPS (CPU). Pour accélérer le traitement, on peut les déporter sur [Modal](https://modal.com) (serveurs avec CPUs rapides, ~$0.001/vidéo).
+
+### Setup Modal (une seule fois)
+
+```bash
+# Sur ta machine locale
+brew install pipx && pipx install modal
+modal setup                          # crée un compte + authentification
+
+# Déployer les fonctions
+cd subtitles-creator
+modal deploy modal_deploy.py
+```
+
+### Créer un token pour le VPS
+
+```bash
+modal token new --label subtitles-vps
+# → Affiche MODAL_TOKEN_ID et MODAL_TOKEN_SECRET
+```
+
+### Activer Modal sur le VPS
+
+Créer un fichier `.env` à côté du `docker-compose.yml` :
+
+```env
+USE_MODAL=true
+MODAL_TOKEN_ID=ak-xxxxx
+MODAL_TOKEN_SECRET=as-xxxxx
+```
+
+Puis rebuild :
+
+```bash
+docker compose up -d --build
+```
+
+### Désactiver Modal
+
+Supprimer le `.env` ou mettre `USE_MODAL=false`, puis `docker compose up -d --build`.
+
 ## Dev local
 
 ```bash
@@ -76,7 +119,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 ## Configuration
 
-| Variable        | Défaut                  | Description               |
-|-----------------|-------------------------|---------------------------|
-| `WHISPER_MODEL` | `base`                  | tiny/base/small/medium    |
-| `DOMAIN`        | `subtitles.topilo.dev`  | Domaine pour nginx + SSL  |
+| Variable             | Défaut                  | Description                              |
+|----------------------|-------------------------|------------------------------------------|
+| `WHISPER_MODEL`      | `base`                  | tiny/base/small/medium                   |
+| `DOMAIN`             | `subtitles.topilo.dev`  | Domaine pour nginx + SSL                 |
+| `USE_MODAL`          | `false`                 | Activer Modal pour le compute            |
+| `MODAL_TOKEN_ID`     | —                       | Token Modal (requis si USE_MODAL=true)   |
+| `MODAL_TOKEN_SECRET` | —                       | Secret Modal (requis si USE_MODAL=true)  |

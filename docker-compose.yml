@@ -9,6 +9,9 @@ services:
       - whisper-models:/root/.cache
     environment:
       - WHISPER_MODEL=${WHISPER_MODEL:-base}
+      - USE_MODAL=${USE_MODAL:-false}
+      - MODAL_TOKEN_ID=${MODAL_TOKEN_ID:-}
+      - MODAL_TOKEN_SECRET=${MODAL_TOKEN_SECRET:-}
     networks:
       - internal
     deploy:

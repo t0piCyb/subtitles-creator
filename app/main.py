@@ -12,7 +12,6 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from faster_whisper import WhisperModel
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -37,11 +36,18 @@ PROCESSED_DIR.mkdir(exist_ok=True)
 # Background job progress tracking: {file_id: {progress: int, status: str, error: str|None, size_mb: float|None}}
 jobs: Dict[str, Dict] = {}
 
-# Load Whisper model
+# Modal mode: offload transcription and video generation to Modal GPU
+USE_MODAL = os.getenv("USE_MODAL", "false").lower() in ("true", "1", "yes")
 MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
-logger.info(f"Loading Whisper model: {MODEL_NAME}")
-model = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8", cpu_threads=4)
-logger.info("Model loaded")
+
+if USE_MODAL:
+    logger.info(f"Modal mode enabled — heavy compute offloaded to Modal (model={MODEL_NAME})")
+    model = None
+else:
+    from faster_whisper import WhisperModel
+    logger.info(f"Loading Whisper model locally: {MODEL_NAME}")
+    model = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8", cpu_threads=4)
+    logger.info("Model loaded")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -66,32 +72,38 @@ async def upload_and_transcribe(file: UploadFile = File(...)):
         with open(video_path, "wb") as f:
             f.write(content)
 
-        # Transcribe
-        segments, info = model.transcribe(
-            str(video_path),
-            language=None,
-            word_timestamps=True,
-            vad_filter=False,
-            beam_size=5,
-        )
-        lang = info.language
-        logger.info(f"Langue détectée: {lang} ({info.language_probability:.0%})")
+        if USE_MODAL:
+            # Offload transcription to Modal GPU
+            from app.modal_client import modal_transcribe
+            result = modal_transcribe(content, file.filename, MODEL_NAME)
+            lang = result["language"]
+            words = result["subtitles"]
+            logger.info(f"Modal transcription: {result['raw_word_count']} mots bruts -> {result['merged_word_count']} après fusion, lang={lang}")
+        else:
+            # Local transcription
+            segments, info = model.transcribe(
+                str(video_path),
+                language=None,
+                word_timestamps=True,
+                vad_filter=False,
+                beam_size=5,
+            )
+            lang = info.language
+            logger.info(f"Langue détectée: {lang} ({info.language_probability:.0%})")
 
-        raw_words = []
-        for segment in segments:
-            if not segment.words:
-                continue
-            for w in segment.words:
-                raw_words.append({
-                    "text": w.word.strip(),
-                    "start": round(w.start, 3),
-                    "end": round(w.end, 3),
-                })
+            raw_words = []
+            for segment in segments:
+                if not segment.words:
+                    continue
+                for w in segment.words:
+                    raw_words.append({
+                        "text": w.word.strip(),
+                        "start": round(w.start, 3),
+                        "end": round(w.end, 3),
+                    })
 
-        # Merge compound words (hyphens, apostrophes)
-        words = merge_compound_words(raw_words)
-
-        logger.info(f"Transcription: {len(raw_words)} mots bruts -> {len(words)} après fusion")
+            words = merge_compound_words(raw_words)
+            logger.info(f"Transcription: {len(raw_words)} mots bruts -> {len(words)} après fusion")
 
         # Save subtitles JSON alongside video
         subs_path = UPLOAD_DIR / f"{file_id}.json"
@@ -169,69 +181,86 @@ async def generate_video(payload: dict = Body(...)):
     if not video_path:
         raise HTTPException(status_code=404, detail="Vidéo source introuvable")
 
-    ass_path = UPLOAD_DIR / f"{file_id}.ass"
     output_path = PROCESSED_DIR / f"{file_id}_subtitled.mp4"
 
     if output_path.exists():
         output_path.unlink()
 
-    width, height = get_video_dimensions(video_path)
-    generate_ass(subs, ass_path, width, height)
-    duration = get_video_duration(video_path)
-
     jobs.pop(file_id, None)
     jobs[file_id] = {"progress": 0, "status": "encoding", "error": None, "size_mb": None}
 
-    def run_ffmpeg():
-        try:
-            cmd = [
-                "ffmpeg",
-                "-i", str(video_path),
-                "-vf", f"ass={ass_path}",
-                "-c:a", "copy",
-                "-y",
-                "-progress", "pipe:1",
-                "-nostats",
-                str(output_path),
-            ]
-            logger.info(f"FFmpeg: {' '.join(cmd)}")
-
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
-
-            for line in proc.stdout:
-                line = line.strip()
-                if line.startswith("out_time_ms="):
-                    try:
-                        time_ms = int(line.split("=")[1])
-                        if duration > 0:
-                            pct = min(99, int((time_ms / 1000 / duration) * 100))
-                            jobs[file_id]["progress"] = pct
-                    except (ValueError, ZeroDivisionError):
-                        pass
-                elif line.startswith("progress=end"):
-                    break
-
-            proc.wait(timeout=600)
-
-            if proc.returncode != 0:
-                stderr = proc.stderr.read()
-                logger.error(f"FFmpeg error: {stderr[-500:]}")
-                jobs[file_id].update(status="error", error="FFmpeg a échoué")
-            else:
-                size_mb = output_path.stat().st_size / (1024 * 1024)
-                logger.info(f"Vidéo générée: {output_path} ({size_mb:.1f} MB)")
+    if USE_MODAL:
+        def run_modal_burn():
+            try:
+                from app.modal_client import modal_burn_subtitles
+                video_bytes = video_path.read_bytes()
+                jobs[file_id]["progress"] = 10  # Uploading to Modal
+                result_bytes = modal_burn_subtitles(video_bytes, subs, video_path.name)
+                output_path.write_bytes(result_bytes)
+                size_mb = len(result_bytes) / (1024 * 1024)
+                logger.info(f"Modal vidéo générée: {output_path} ({size_mb:.1f} MB)")
                 jobs[file_id].update(progress=100, status="done", size_mb=round(size_mb, 1))
+            except Exception as e:
+                logger.error(f"Erreur Modal génération: {e}")
+                jobs[file_id].update(status="error", error=str(e))
 
-        except Exception as e:
-            logger.error(f"Erreur génération: {e}")
-            jobs[file_id].update(status="error", error=str(e))
-        finally:
-            if ass_path.exists():
-                ass_path.unlink()
+        threading.Thread(target=run_modal_burn, daemon=True).start()
+    else:
+        ass_path = UPLOAD_DIR / f"{file_id}.ass"
+        width, height = get_video_dimensions(video_path)
+        generate_ass(subs, ass_path, width, height)
+        duration = get_video_duration(video_path)
 
-    threading.Thread(target=run_ffmpeg, daemon=True).start()
+        def run_ffmpeg():
+            try:
+                cmd = [
+                    "ffmpeg",
+                    "-i", str(video_path),
+                    "-vf", f"ass={ass_path}",
+                    "-c:a", "copy",
+                    "-y",
+                    "-progress", "pipe:1",
+                    "-nostats",
+                    str(output_path),
+                ]
+                logger.info(f"FFmpeg: {' '.join(cmd)}")
+
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
+
+                for line in proc.stdout:
+                    line = line.strip()
+                    if line.startswith("out_time_ms="):
+                        try:
+                            time_ms = int(line.split("=")[1])
+                            if duration > 0:
+                                pct = min(99, int((time_ms / 1000 / duration) * 100))
+                                jobs[file_id]["progress"] = pct
+                        except (ValueError, ZeroDivisionError):
+                            pass
+                    elif line.startswith("progress=end"):
+                        break
+
+                proc.wait(timeout=600)
+
+                if proc.returncode != 0:
+                    stderr = proc.stderr.read()
+                    logger.error(f"FFmpeg error: {stderr[-500:]}")
+                    jobs[file_id].update(status="error", error="FFmpeg a échoué")
+                else:
+                    size_mb = output_path.stat().st_size / (1024 * 1024)
+                    logger.info(f"Vidéo générée: {output_path} ({size_mb:.1f} MB)")
+                    jobs[file_id].update(progress=100, status="done", size_mb=round(size_mb, 1))
+
+            except Exception as e:
+                logger.error(f"Erreur génération: {e}")
+                jobs[file_id].update(status="error", error=str(e))
+            finally:
+                if ass_path.exists():
+                    ass_path.unlink()
+
+        threading.Thread(target=run_ffmpeg, daemon=True).start()
 
     return JSONResponse(content={"started": True, "file_id": file_id})
 
