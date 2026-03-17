@@ -2,6 +2,7 @@ import os
 import re
 import uuid
 import json
+import asyncio
 import logging
 import subprocess
 import threading
@@ -75,7 +76,7 @@ async def upload_and_transcribe(file: UploadFile = File(...)):
         if USE_MODAL:
             # Offload transcription to Modal GPU
             from app.modal_client import modal_transcribe
-            result = modal_transcribe(content, file.filename, MODEL_NAME)
+            result = await modal_transcribe(content, file.filename, MODEL_NAME)
             lang = result["language"]
             words = result["subtitles"]
             logger.info(f"Modal transcription: {result['raw_word_count']} mots bruts -> {result['merged_word_count']} après fusion, lang={lang}")
@@ -190,12 +191,12 @@ async def generate_video(payload: dict = Body(...)):
     jobs[file_id] = {"progress": 0, "status": "encoding", "error": None, "size_mb": None}
 
     if USE_MODAL:
-        def run_modal_burn():
+        async def run_modal_burn():
             try:
                 from app.modal_client import modal_burn_subtitles
                 video_bytes = video_path.read_bytes()
                 jobs[file_id]["progress"] = 10  # Uploading to Modal
-                result_bytes = modal_burn_subtitles(video_bytes, subs, video_path.name)
+                result_bytes = await modal_burn_subtitles(video_bytes, subs, video_path.name)
                 output_path.write_bytes(result_bytes)
                 size_mb = len(result_bytes) / (1024 * 1024)
                 logger.info(f"Modal vidéo générée: {output_path} ({size_mb:.1f} MB)")
@@ -204,7 +205,7 @@ async def generate_video(payload: dict = Body(...)):
                 logger.error(f"Erreur Modal génération: {e}")
                 jobs[file_id].update(status="error", error=str(e))
 
-        threading.Thread(target=run_modal_burn, daemon=True).start()
+        asyncio.create_task(run_modal_burn())
     else:
         ass_path = UPLOAD_DIR / f"{file_id}.ass"
         width, height = get_video_dimensions(video_path)

@@ -34,15 +34,18 @@ whisper_cache = modal.Volume.from_name("subtitles-whisper-cache", create_if_miss
 @app.function(
     image=image,
     cpu=4,
-    volumes={"/root/.cache": whisper_cache},
+    volumes={"/cache/whisper": whisper_cache},
     timeout=300,
     memory=4096,
 )
 def transcribe_video(video_bytes: bytes, filename: str, model_name: str = "base") -> dict:
     """Transcribe video using Whisper on CPU (sufficient for videos <3min)."""
+    import os
     import re
     import tempfile
     from pathlib import Path
+
+    os.environ["HF_HOME"] = "/cache/whisper"
     from faster_whisper import WhisperModel
 
     # Write video to temp file
