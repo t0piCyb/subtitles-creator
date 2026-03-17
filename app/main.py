@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import json
 import logging
@@ -8,7 +9,7 @@ from typing import List, Dict
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Body
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
 
@@ -72,20 +73,23 @@ async def upload_and_transcribe(file: UploadFile = File(...)):
         lang = info.language
         logger.info(f"Langue détectée: {lang} ({info.language_probability:.0%})")
 
-        words = []
+        raw_words = []
         for segment in segments:
             if not segment.words:
                 continue
             for w in segment.words:
-                words.append({
+                raw_words.append({
                     "text": w.word.strip(),
                     "start": round(w.start, 3),
                     "end": round(w.end, 3),
                 })
 
-        logger.info(f"Transcription: {len(words)} mots extraits")
+        # Merge compound words (hyphens, apostrophes)
+        words = merge_compound_words(raw_words)
 
-        # Save subtitles JSON alongside video for later use
+        logger.info(f"Transcription: {len(raw_words)} mots bruts -> {len(words)} après fusion")
+
+        # Save subtitles JSON alongside video
         subs_path = UPLOAD_DIR / f"{file_id}.json"
         with open(subs_path, "w", encoding="utf-8") as f:
             json.dump(words, f, ensure_ascii=False)
@@ -99,15 +103,58 @@ async def upload_and_transcribe(file: UploadFile = File(...)):
 
     except Exception as e:
         logger.error(f"Erreur upload/transcription: {e}")
-        # Cleanup on error
         if video_path.exists():
             video_path.unlink()
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def merge_compound_words(words: List[Dict]) -> List[Dict]:
+    """
+    Merge words connected by apostrophes or hyphens.
+    Whisper often splits "qu'est-ce" into ["qu'", "est", "-", "ce"]
+    or "l'homme" into ["l'", "homme"].
+    """
+    if not words:
+        return words
+
+    merged = [dict(words[0])]
+
+    for w in words[1:]:
+        prev = merged[-1]
+        text = w["text"]
+
+        # Merge if: previous word ends with ' or -, current word is -, or current starts with '
+        should_merge = (
+            prev["text"].endswith("'")
+            or prev["text"].endswith("-")
+            or text == "-"
+            or text.startswith("-")
+            or text.startswith("'")
+        )
+
+        if should_merge:
+            # If previous ends with ' or - just concat, otherwise add separator
+            if prev["text"].endswith("'") or prev["text"].endswith("-"):
+                prev["text"] = prev["text"] + text
+            elif text.startswith("-") or text.startswith("'") or text == "-":
+                prev["text"] = prev["text"] + text
+            else:
+                prev["text"] = prev["text"] + text
+            prev["end"] = w["end"]
+        else:
+            merged.append(dict(w))
+
+    # Second pass: clean up standalone hyphens that got merged weirdly
+    for m in merged:
+        m["text"] = re.sub(r'\s*-\s*', '-', m["text"])
+        m["text"] = m["text"].strip("-").strip() or m["text"]
+
+    return [m for m in merged if m["text"].strip()]
+
+
 @app.post("/api/generate")
 async def generate_video(payload: dict = Body(...)):
-    """Burn edited subtitles into the video and return download info."""
+    """Burn subtitles into video with SSE progress streaming."""
     file_id = payload.get("file_id")
     subtitles = payload.get("subtitles")
 
@@ -115,51 +162,80 @@ async def generate_video(payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail="file_id et subtitles requis")
 
     # Find source video
-    video_path = None
-    for ext in [".mp4", ".mov", ".avi", ".webm", ".mkv"]:
-        candidate = UPLOAD_DIR / f"{file_id}{ext}"
-        if candidate.exists():
-            video_path = candidate
-            break
-
+    video_path = find_video(file_id)
     if not video_path:
         raise HTTPException(status_code=404, detail="Vidéo source introuvable")
 
     ass_path = UPLOAD_DIR / f"{file_id}.ass"
     output_path = PROCESSED_DIR / f"{file_id}_subtitled.mp4"
 
-    # Remove previous output if regenerating
     if output_path.exists():
         output_path.unlink()
 
-    try:
-        # Generate ASS file from edited subtitles
-        generate_ass(subtitles, ass_path)
+    # Generate ASS
+    generate_ass(subtitles, ass_path)
 
-        # Burn subtitles with FFmpeg
-        burn_subtitles(video_path, ass_path, output_path)
+    # Get video duration for progress calculation
+    duration = get_video_duration(video_path)
 
-        return JSONResponse(content={
-            "success": True,
-            "file_id": file_id,
-            "download_url": f"/api/download/{file_id}",
-        })
+    def stream_progress():
+        try:
+            cmd = [
+                "ffmpeg",
+                "-i", str(video_path),
+                "-vf", f"ass={ass_path}",
+                "-c:a", "copy",
+                "-y",
+                "-progress", "pipe:1",
+                "-nostats",
+                str(output_path),
+            ]
+            logger.info(f"FFmpeg: {' '.join(cmd)}")
 
-    except Exception as e:
-        logger.error(f"Erreur génération: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if ass_path.exists():
-            ass_path.unlink()
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+
+            for line in proc.stdout:
+                line = line.strip()
+                if line.startswith("out_time_ms="):
+                    try:
+                        time_ms = int(line.split("=")[1])
+                        if duration > 0:
+                            pct = min(99, int((time_ms / 1000 / duration) * 100))
+                            yield f"data: {json.dumps({'progress': pct, 'status': 'encoding'})}\n\n"
+                    except (ValueError, ZeroDivisionError):
+                        pass
+                elif line.startswith("progress=end"):
+                    break
+
+            proc.wait(timeout=600)
+
+            if proc.returncode != 0:
+                stderr = proc.stderr.read()
+                logger.error(f"FFmpeg error: {stderr[-500:]}")
+                yield f"data: {json.dumps({'error': 'FFmpeg a échoué'})}\n\n"
+            else:
+                size_mb = output_path.stat().st_size / (1024 * 1024)
+                logger.info(f"Vidéo générée: {output_path} ({size_mb:.1f} MB)")
+                yield f"data: {json.dumps({'progress': 100, 'status': 'done', 'download_url': f'/api/download/{file_id}', 'size_mb': round(size_mb, 1)})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Erreur génération: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            if ass_path.exists():
+                ass_path.unlink()
+
+    return StreamingResponse(stream_progress(), media_type="text/event-stream")
 
 
 @app.get("/api/video/{file_id}")
 async def serve_original_video(file_id: str):
     """Serve the original uploaded video for preview."""
-    for ext in [".mp4", ".mov", ".avi", ".webm", ".mkv"]:
-        path = UPLOAD_DIR / f"{file_id}{ext}"
-        if path.exists():
-            return FileResponse(path, media_type="video/mp4")
+    path = find_video(file_id)
+    if path:
+        return FileResponse(path, media_type="video/mp4")
     raise HTTPException(status_code=404, detail="Vidéo introuvable")
 
 
@@ -193,8 +269,33 @@ async def health():
     return {"status": "ok", "model": MODEL_NAME}
 
 
+# --- Helpers ---
+
+def find_video(file_id: str) -> Path | None:
+    for ext in [".mp4", ".mov", ".avi", ".webm", ".mkv"]:
+        path = UPLOAD_DIR / f"{file_id}{ext}"
+        if path.exists():
+            return path
+    return None
+
+
+def get_video_duration(video_path: Path) -> float:
+    """Get video duration in seconds using ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
+            capture_output=True, text=True, timeout=10,
+        )
+        return float(result.stdout.strip())
+    except Exception:
+        return 0
+
+
 def generate_ass(subtitles: List[Dict], output_path: Path) -> None:
-    """Generate ASS subtitle file with Slabo 27px font, word-by-word display."""
+    """Generate ASS subtitle file with Slabo 27px font, yellow text, word-by-word."""
+    # ASS color format: &HAABBGGRR
+    # Yellow = &H0000FFFF (R=FF, G=FF, B=00)
     header = """[Script Info]
 Title: Subtitles
 ScriptType: v4.00+
@@ -205,7 +306,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Slabo 27px,72,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,4,2,2,10,10,80,1
+Style: Default,Slabo 27px,72,&H0000FFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,4,2,2,10,10,80,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -231,23 +332,3 @@ def format_ass_time(seconds: float) -> str:
     s = int(seconds % 60)
     cs = int((seconds % 1) * 100)
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
-
-
-def burn_subtitles(video_path: Path, ass_path: Path, output_path: Path) -> None:
-    """Use FFmpeg to burn ASS subtitles into the video."""
-    cmd = [
-        "ffmpeg",
-        "-i", str(video_path),
-        "-vf", f"ass={ass_path}",
-        "-c:a", "copy",
-        "-y",
-        str(output_path),
-    ]
-    logger.info(f"FFmpeg: {' '.join(cmd)}")
-
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        logger.error(f"FFmpeg stderr: {result.stderr}")
-        raise RuntimeError(f"FFmpeg a échoué: {result.stderr[-500:]}")
-
-    logger.info(f"Vidéo générée: {output_path} ({output_path.stat().st_size / (1024*1024):.1f} MB)")

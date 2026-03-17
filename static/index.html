@@ -24,13 +24,7 @@
             justify-content: space-between;
         }
 
-        .header h1 {
-            font-size: 1.2em;
-            font-weight: 600;
-            color: #fff;
-        }
-
-        .header-actions { display: flex; gap: 8px; }
+        .header h1 { font-size: 1.2em; font-weight: 600; color: #fff; }
 
         /* --- UPLOAD VIEW --- */
         #view-upload {
@@ -60,7 +54,6 @@
         .upload-zone h2 { color: #fff; margin: 16px 0 8px; font-size: 1.4em; }
         .upload-zone p { color: #888; font-size: .9em; }
         .upload-icon { font-size: 3em; }
-
         #fileInput { display: none; }
 
         /* --- PROCESSING VIEW --- */
@@ -82,7 +75,6 @@
         }
 
         @keyframes spin { to { transform: rotate(360deg); } }
-
         .processing-text { color: #aaa; font-size: 1.1em; }
 
         /* --- EDITOR VIEW --- */
@@ -116,10 +108,7 @@
             flex-wrap: wrap;
         }
 
-        .subs-toolbar span {
-            font-size: .85em;
-            color: #888;
-        }
+        .subs-toolbar span { font-size: .85em; color: #888; }
 
         .subs-list {
             flex: 1;
@@ -151,10 +140,7 @@
             width: 100%;
         }
 
-        .sub-item input[type="text"]:focus {
-            outline: none;
-            border-color: #646cff;
-        }
+        .sub-item input[type="text"]:focus { outline: none; border-color: #646cff; }
 
         .time-input {
             background: #1a1a1a;
@@ -211,10 +197,10 @@
             left: 50%;
             transform: translateX(-50%);
             font-family: 'Slabo 27px', serif;
-            font-size: 1.8em;
-            color: #fff;
+            font-size: 1.1em;
+            color: #ffd700;
             text-transform: uppercase;
-            text-shadow: 2px 2px 4px rgba(0,0,0,.9), -1px -1px 2px rgba(0,0,0,.9);
+            text-shadow: 1px 1px 3px rgba(0,0,0,.95), -1px -1px 2px rgba(0,0,0,.95);
             text-align: center;
             pointer-events: none;
             padding: 0 20px;
@@ -226,6 +212,34 @@
             flex-direction: column;
             gap: 8px;
             border-top: 1px solid #2a2a2a;
+        }
+
+        /* Progress bar */
+        .progress-bar-container {
+            display: none;
+            background: #222;
+            border-radius: 8px;
+            overflow: hidden;
+            height: 36px;
+            position: relative;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #646cff, #8b5cf6);
+            transition: width .3s;
+            width: 0%;
+        }
+
+        .progress-bar-text {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: .85em;
+            font-weight: 600;
+            color: #fff;
         }
 
         /* Buttons */
@@ -240,42 +254,16 @@
             font-family: 'Inter', sans-serif;
         }
 
-        .btn:disabled {
-            opacity: .5;
-            cursor: not-allowed;
-        }
-
-        .btn-primary {
-            background: #646cff;
-            color: #fff;
-        }
-
+        .btn:disabled { opacity: .5; cursor: not-allowed; }
+        .btn-primary { background: #646cff; color: #fff; }
         .btn-primary:hover:not(:disabled) { background: #535bf2; }
-
-        .btn-success {
-            background: #22c55e;
-            color: #fff;
-        }
-
+        .btn-success { background: #22c55e; color: #fff; }
         .btn-success:hover:not(:disabled) { background: #16a34a; }
+        .btn-outline { background: transparent; color: #aaa; border: 1px solid #333; }
+        .btn-outline:hover:not(:disabled) { border-color: #646cff; color: #646cff; }
+        .btn-sm { padding: 6px 12px; font-size: .8em; }
 
-        .btn-outline {
-            background: transparent;
-            color: #aaa;
-            border: 1px solid #333;
-        }
-
-        .btn-outline:hover:not(:disabled) {
-            border-color: #646cff;
-            color: #646cff;
-        }
-
-        .btn-sm {
-            padding: 6px 12px;
-            font-size: .8em;
-        }
-
-        /* Error toast */
+        /* Toast */
         .toast {
             position: fixed;
             bottom: 24px;
@@ -310,7 +298,6 @@
 
 <div class="header">
     <h1>Sous-titres Creator</h1>
-    <div class="header-actions" id="headerActions"></div>
 </div>
 
 <!-- UPLOAD -->
@@ -352,6 +339,10 @@
                 <button class="btn btn-primary" id="btnGenerate" onclick="generateVideo()">
                     Générer la vidéo sous-titrée
                 </button>
+                <div class="progress-bar-container" id="progressBar">
+                    <div class="progress-bar-fill" id="progressFill"></div>
+                    <div class="progress-bar-text" id="progressText">0%</div>
+                </div>
                 <button class="btn btn-success" id="btnDownload" style="display:none" onclick="downloadVideo()">
                     Télécharger la vidéo
                 </button>
@@ -408,7 +399,6 @@ async function handleFile(file) {
         subtitles = data.subtitles;
         originalSubtitles = JSON.parse(JSON.stringify(subtitles));
 
-        // Setup video preview
         $('videoPlayer').src = `/api/video/${fileId}`;
 
         showView('editor');
@@ -434,19 +424,21 @@ function renderSubtitles() {
 
         div.innerHTML = `
             <input type="text" class="time-input" value="${formatTime(sub.start)}"
-                   onchange="updateTime(${i}, 'start', this.value)"
-                   title="Début">
-            <input type="text" value="${sub.text}"
+                   onchange="updateTime(${i}, 'start', this.value)" title="Début">
+            <input type="text" value="${escapeHtml(sub.text)}"
                    onchange="updateText(${i}, this.value)"
                    onfocus="seekTo(${sub.start})">
             <input type="text" class="time-input" value="${formatTime(sub.end)}"
-                   onchange="updateTime(${i}, 'end', this.value)"
-                   title="Fin">
+                   onchange="updateTime(${i}, 'end', this.value)" title="Fin">
             <button class="btn-delete-sub" onclick="deleteSub(${i})" title="Supprimer">×</button>
         `;
 
         list.appendChild(div);
     });
+}
+
+function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function formatTime(sec) {
@@ -462,15 +454,8 @@ function parseTime(str) {
     return parseFloat(str) || 0;
 }
 
-function updateText(i, val) {
-    subtitles[i].text = val;
-    hideDownload();
-}
-
-function updateTime(i, field, val) {
-    subtitles[i][field] = parseTime(val);
-    hideDownload();
-}
+function updateText(i, val) { subtitles[i].text = val; hideDownload(); }
+function updateTime(i, field, val) { subtitles[i][field] = parseTime(val); hideDownload(); }
 
 function deleteSub(i) {
     subtitles.splice(i, 1);
@@ -483,7 +468,6 @@ function addSubtitle() {
     const t = video.currentTime || 0;
     const newSub = { text: 'nouveau', start: round3(t), end: round3(t + 0.5) };
 
-    // Insert at correct position
     const idx = subtitles.findIndex(s => s.start > t);
     if (idx === -1) subtitles.push(newSub);
     else subtitles.splice(idx, 0, newSub);
@@ -491,7 +475,6 @@ function addSubtitle() {
     renderSubtitles();
     hideDownload();
 
-    // Scroll to new item
     const items = $('subsList').querySelectorAll('.sub-item');
     const target = idx === -1 ? items[items.length - 1] : items[idx];
     if (target) {
@@ -506,13 +489,10 @@ function resetSubtitles() {
     hideDownload();
 }
 
-function seekTo(time) {
-    $('videoPlayer').currentTime = time;
-}
-
+function seekTo(time) { $('videoPlayer').currentTime = time; }
 function round3(n) { return Math.round(n * 1000) / 1000; }
 
-// --- Live subtitle preview on video ---
+// --- Live subtitle preview ---
 let syncInterval = null;
 
 function startSubtitleSync() {
@@ -526,7 +506,6 @@ function startSubtitleSync() {
         const current = subtitles.find(s => t >= s.start && t <= s.end);
         preview.textContent = current ? current.text.toUpperCase() : '';
 
-        // Highlight active subtitle in list
         document.querySelectorAll('.sub-item').forEach(el => {
             const i = parseInt(el.dataset.index);
             el.classList.toggle('active', subtitles[i] && t >= subtitles[i].start && t <= subtitles[i].end);
@@ -534,11 +513,19 @@ function startSubtitleSync() {
     }, 50);
 }
 
-// --- Generate ---
+// --- Generate with SSE progress ---
 async function generateVideo() {
     const btn = $('btnGenerate');
+    const bar = $('progressBar');
+    const fill = $('progressFill');
+    const text = $('progressText');
+
     btn.disabled = true;
-    btn.textContent = 'Génération en cours...';
+    btn.style.display = 'none';
+    bar.style.display = 'block';
+    fill.style.width = '0%';
+    text.textContent = 'Démarrage...';
+    hideDownload();
 
     try {
         const res = await fetch('/api/generate', {
@@ -552,27 +539,64 @@ async function generateVideo() {
             throw new Error(err.detail || `Erreur ${res.status}`);
         }
 
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete line
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                    const data = JSON.parse(line.slice(6));
+
+                    if (data.error) throw new Error(data.error);
+
+                    if (data.progress !== undefined) {
+                        fill.style.width = data.progress + '%';
+                        text.textContent = data.progress < 100
+                            ? `Encodage... ${data.progress}%`
+                            : `Terminé (${data.size_mb} MB)`;
+                    }
+
+                    if (data.status === 'done') {
+                        $('btnDownload').style.display = 'block';
+                    }
+                } catch (e) {
+                    if (e.message && e.message !== 'Unexpected end of JSON input') throw e;
+                }
+            }
+        }
+
         btn.textContent = 'Régénérer la vidéo';
         btn.disabled = false;
-        $('btnDownload').style.display = 'block';
+        btn.style.display = 'block';
 
     } catch (err) {
         showToast(err.message);
+        fill.style.width = '0%';
+        text.textContent = 'Erreur';
         btn.textContent = 'Générer la vidéo sous-titrée';
         btn.disabled = false;
+        btn.style.display = 'block';
     }
 }
 
 function downloadVideo() {
-    const a = document.createElement('a');
-    a.href = `/api/download/${fileId}`;
-    a.download = 'video_sous_titree.mp4';
-    a.click();
+    window.location.href = `/api/download/${fileId}`;
 }
 
 function hideDownload() {
     $('btnDownload').style.display = 'none';
+    $('progressBar').style.display = 'none';
     $('btnGenerate').textContent = 'Générer la vidéo sous-titrée';
+    $('btnGenerate').style.display = 'block';
 }
 
 // --- Navigation ---
@@ -590,8 +614,10 @@ function resetAll() {
     $('videoPlayer').src = '';
     $('subtitlePreview').textContent = '';
     $('btnDownload').style.display = 'none';
+    $('progressBar').style.display = 'none';
     $('btnGenerate').textContent = 'Générer la vidéo sous-titrée';
     $('btnGenerate').disabled = false;
+    $('btnGenerate').style.display = 'block';
     fileInput.value = '';
     if (syncInterval) clearInterval(syncInterval);
     showView('upload');
