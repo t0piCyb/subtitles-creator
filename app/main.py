@@ -364,15 +364,15 @@ def generate_ass(subtitles: List[Dict], output_path: Path, width: int = 1920, he
     if is_vertical:
         # Vertical (9:16): smaller font, lower position, PlayRes matches vertical
         play_res_x, play_res_y = 1080, 1920
-        font_size = 52
+        font_size = 68
         margin_v = 250
-        outline = 3
+        outline = 4
     else:
         # Horizontal (16:9): standard
         play_res_x, play_res_y = 1920, 1080
-        font_size = 72
+        font_size = 90
         margin_v = 80
-        outline = 4
+        outline = 5
 
     # ASS color format: &HAABBGGRR — Yellow = &H0000FFFF
     header = f"""[Script Info]

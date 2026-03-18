@@ -44,8 +44,11 @@ def transcribe_video(video_bytes: bytes, filename: str, model_name: str = "base"
     """Transcribe video using Whisper on CPU (sufficient for videos <3min)."""
     import os
     import re
+    import time
     import tempfile
     from pathlib import Path
+
+    print(f"[transcribe] Start: {filename} ({len(video_bytes) / (1024*1024):.1f} MB), model={model_name}")
 
     os.environ["HF_HOME"] = "/cache/whisper"
     from faster_whisper import WhisperModel
@@ -55,10 +58,16 @@ def transcribe_video(video_bytes: bytes, filename: str, model_name: str = "base"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
         f.write(video_bytes)
         video_path = f.name
+    print(f"[transcribe] Video written to {video_path}")
 
     try:
+        t0 = time.time()
+        print(f"[transcribe] Loading Whisper model '{model_name}'...")
         model = WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=4)
+        print(f"[transcribe] Model loaded in {time.time() - t0:.1f}s")
 
+        t0 = time.time()
+        print(f"[transcribe] Transcribing...")
         segments, info = model.transcribe(
             video_path,
             language=None,
@@ -77,9 +86,11 @@ def transcribe_video(video_bytes: bytes, filename: str, model_name: str = "base"
                     "start": round(w.start, 3),
                     "end": round(w.end, 3),
                 })
+        print(f"[transcribe] Transcription done in {time.time() - t0:.1f}s — {len(raw_words)} raw words, lang={info.language} ({info.language_probability:.0%})")
 
         # Merge compound words (French contractions)
         words = _merge_compound_words(raw_words)
+        print(f"[transcribe] After merge: {len(words)} words")
 
         return {
             "language": info.language,
@@ -88,6 +99,9 @@ def transcribe_video(video_bytes: bytes, filename: str, model_name: str = "base"
             "merged_word_count": len(words),
             "subtitles": words,
         }
+    except Exception as e:
+        print(f"[transcribe] ERROR: {e}")
+        raise
     finally:
         Path(video_path).unlink(missing_ok=True)
 
@@ -101,8 +115,11 @@ def transcribe_video(video_bytes: bytes, filename: str, model_name: str = "base"
 def burn_subtitles(video_bytes: bytes, subtitles: list, filename: str) -> bytes:
     """Burn subtitles into video using FFmpeg (CPU, sufficient for videos <3min)."""
     import subprocess
+    import time
     import tempfile
     from pathlib import Path
+
+    print(f"[burn] Start: {filename} ({len(video_bytes) / (1024*1024):.1f} MB), {len(subtitles)} subtitles")
 
     suffix = Path(filename).suffix or ".mp4"
 
@@ -116,9 +133,11 @@ def burn_subtitles(video_bytes: bytes, subtitles: list, filename: str) -> bytes:
 
         # Get dimensions
         width, height = _get_video_dimensions(input_path)
+        print(f"[burn] Video dimensions: {width}x{height}")
 
         # Generate ASS file
         _generate_ass(subtitles, ass_path, width, height)
+        print(f"[burn] ASS file generated")
 
         # Run FFmpeg
         cmd = [
@@ -130,12 +149,17 @@ def burn_subtitles(video_bytes: bytes, subtitles: list, filename: str) -> bytes:
             str(output_path),
         ]
 
+        print(f"[burn] Running FFmpeg...")
+        t0 = time.time()
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=500)
 
         if result.returncode != 0:
+            print(f"[burn] FFmpeg FAILED: {result.stderr[-500:]}")
             raise RuntimeError(f"FFmpeg failed: {result.stderr[-500:]}")
 
-        return output_path.read_bytes()
+        output_bytes = output_path.read_bytes()
+        print(f"[burn] Done in {time.time() - t0:.1f}s — output: {len(output_bytes) / (1024*1024):.1f} MB")
+        return output_bytes
 
 
 # --- Helpers (duplicated from main.py to run in Modal sandbox) ---
@@ -197,14 +221,14 @@ def _generate_ass(subtitles: list, output_path, width: int = 1920, height: int =
 
     if is_vertical:
         play_res_x, play_res_y = 1080, 1920
-        font_size = 52
+        font_size = 68
         margin_v = 250
-        outline = 3
+        outline = 4
     else:
         play_res_x, play_res_y = 1920, 1080
-        font_size = 72
+        font_size = 90
         margin_v = 80
-        outline = 4
+        outline = 5
 
     header = f"""[Script Info]
 Title: Subtitles
