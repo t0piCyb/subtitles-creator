@@ -1,9 +1,9 @@
 """
 Modal deployment for subtitles-creator heavy compute tasks.
 
-Deploys two CPU functions (no GPU needed for short videos <3min):
+Deploys two CPU functions:
 - transcribe_video: Whisper transcription (CPU, 4 cores)
-- burn_subtitles: FFmpeg subtitle burning (CPU, 4 cores)
+- burn_subtitles: FFmpeg subtitle burning (CPU, 8 cores)
 
 Deploy: modal deploy modal_deploy.py
 """
@@ -41,7 +41,7 @@ whisper_cache = modal.Volume.from_name("subtitles-whisper-cache", create_if_miss
     memory=4096,
 )
 def transcribe_video(video_bytes: bytes, filename: str, model_name: str = "base") -> dict:
-    """Transcribe video using Whisper on CPU (sufficient for videos <3min)."""
+    """Transcribe video using Whisper on CPU."""
     import os
     import re
     import time
@@ -108,12 +108,12 @@ def transcribe_video(video_bytes: bytes, filename: str, model_name: str = "base"
 
 @app.function(
     image=image,
-    cpu=4,
+    cpu=8,
     timeout=300,
-    memory=4096,
+    memory=8192,
 )
 def burn_subtitles(video_bytes: bytes, subtitles: list, filename: str) -> bytes:
-    """Burn subtitles into video using FFmpeg (CPU, sufficient for videos <3min)."""
+    """Burn subtitles into video using FFmpeg (8 CPU cores for faster encoding)."""
     import subprocess
     import time
     import tempfile
@@ -139,12 +139,13 @@ def burn_subtitles(video_bytes: bytes, subtitles: list, filename: str) -> bytes:
         _generate_ass(subtitles, ass_path, width, height)
         print(f"[burn] ASS file generated")
 
-        # Run FFmpeg
+        # Run FFmpeg with multithreading
         cmd = [
             "ffmpeg",
             "-i", str(input_path),
             "-vf", f"ass={ass_path}",
             "-c:a", "copy",
+            "-threads", "8",
             "-y",
             str(output_path),
         ]

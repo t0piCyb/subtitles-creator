@@ -58,8 +58,8 @@ async def read_root():
 
 
 @app.post("/api/upload")
-async def upload_and_transcribe(file: UploadFile = File(...)):
-    """Upload video, transcribe, return editable word-by-word subtitles."""
+async def upload_video(file: UploadFile = File(...)):
+    """Upload video, start background transcription, return file_id immediately."""
     if not file.content_type or not file.content_type.startswith("video/"):
         raise HTTPException(status_code=400, detail="Le fichier doit être une vidéo")
 
@@ -69,60 +69,148 @@ async def upload_and_transcribe(file: UploadFile = File(...)):
 
     try:
         content = await file.read()
-        logger.info(f"Upload: {file.filename} ({len(content) / (1024*1024):.1f} MB) -> {file_id}")
+        size_mb = len(content) / (1024 * 1024)
+        logger.info(f"Upload: {file.filename} ({size_mb:.1f} MB) -> {file_id}")
         with open(video_path, "wb") as f:
             f.write(content)
 
+        # Start background transcription
+        jobs[file_id] = {"progress": 0, "status": "transcribing", "error": None, "size_mb": None}
+
         if USE_MODAL:
-            # Offload transcription to Modal GPU
-            from app.modal_client import modal_transcribe
-            result = await modal_transcribe(content, file.filename, MODEL_NAME)
-            lang = result["language"]
-            words = result["subtitles"]
-            logger.info(f"Modal transcription: {result['raw_word_count']} mots bruts -> {result['merged_word_count']} après fusion, lang={lang}")
+            async def run_modal_transcribe():
+                try:
+                    from app.modal_client import modal_transcribe
+                    jobs[file_id]["progress"] = 10
+                    result = await modal_transcribe(content, file.filename, MODEL_NAME)
+                    words = result["subtitles"]
+                    lang = result["language"]
+                    logger.info(f"Modal transcription: {result['raw_word_count']} -> {result['merged_word_count']} mots, lang={lang}")
+
+                    subs_path = UPLOAD_DIR / f"{file_id}.json"
+                    with open(subs_path, "w", encoding="utf-8") as sf:
+                        json.dump({"language": lang, "subtitles": words}, sf, ensure_ascii=False)
+
+                    jobs[file_id].update(progress=100, status="transcribed")
+                except Exception as e:
+                    logger.error(f"Erreur Modal transcription: {e}")
+                    jobs[file_id].update(status="error", error=str(e))
+
+            asyncio.create_task(run_modal_transcribe())
         else:
-            # Local transcription
-            segments, info = model.transcribe(
-                str(video_path),
-                language=None,
-                word_timestamps=True,
-                vad_filter=False,
-                beam_size=5,
-            )
-            lang = info.language
-            logger.info(f"Langue détectée: {lang} ({info.language_probability:.0%})")
+            def run_local_transcribe():
+                try:
+                    jobs[file_id]["progress"] = 10
+                    segments, info = model.transcribe(
+                        str(video_path),
+                        language=None,
+                        word_timestamps=True,
+                        vad_filter=False,
+                        beam_size=5,
+                    )
+                    lang = info.language
+                    logger.info(f"Langue détectée: {lang} ({info.language_probability:.0%})")
+                    jobs[file_id]["progress"] = 50
 
-            raw_words = []
-            for segment in segments:
-                if not segment.words:
-                    continue
-                for w in segment.words:
-                    raw_words.append({
-                        "text": w.word.strip(),
-                        "start": round(w.start, 3),
-                        "end": round(w.end, 3),
-                    })
+                    raw_words = []
+                    for segment in segments:
+                        if not segment.words:
+                            continue
+                        for w in segment.words:
+                            raw_words.append({
+                                "text": w.word.strip(),
+                                "start": round(w.start, 3),
+                                "end": round(w.end, 3),
+                            })
 
-            words = merge_compound_words(raw_words)
-            logger.info(f"Transcription: {len(raw_words)} mots bruts -> {len(words)} après fusion")
+                    words = merge_compound_words(raw_words)
+                    logger.info(f"Transcription: {len(raw_words)} -> {len(words)} mots")
 
-        # Save subtitles JSON alongside video
-        subs_path = UPLOAD_DIR / f"{file_id}.json"
-        with open(subs_path, "w", encoding="utf-8") as f:
-            json.dump(words, f, ensure_ascii=False)
+                    subs_path = UPLOAD_DIR / f"{file_id}.json"
+                    with open(subs_path, "w", encoding="utf-8") as sf:
+                        json.dump({"language": lang, "subtitles": words}, sf, ensure_ascii=False)
+
+                    jobs[file_id].update(progress=100, status="transcribed")
+                except Exception as e:
+                    logger.error(f"Erreur transcription: {e}")
+                    jobs[file_id].update(status="error", error=str(e))
+
+            threading.Thread(target=run_local_transcribe, daemon=True).start()
 
         return JSONResponse(content={
             "success": True,
             "file_id": file_id,
-            "language": lang,
-            "subtitles": words,
         })
 
     except Exception as e:
-        logger.error(f"Erreur upload/transcription: {e}")
+        logger.error(f"Erreur upload: {e}")
         if video_path.exists():
             video_path.unlink()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/transcribe-progress/{file_id}")
+async def get_transcribe_progress(file_id: str):
+    """Poll transcription progress."""
+    job = jobs.get(file_id)
+    if not job:
+        # Check if transcription was already completed (subtitles JSON exists)
+        subs_path = UPLOAD_DIR / f"{file_id}.json"
+        if subs_path.exists():
+            with open(subs_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return JSONResponse(content={
+                "progress": 100,
+                "status": "transcribed",
+                "language": data.get("language", "unknown"),
+                "subtitles": data.get("subtitles", data if isinstance(data, list) else []),
+            })
+        raise HTTPException(status_code=404, detail="Job introuvable")
+
+    result = dict(job)
+    if job["status"] == "transcribed":
+        subs_path = UPLOAD_DIR / f"{file_id}.json"
+        with open(subs_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        result["language"] = data.get("language", "unknown")
+        result["subtitles"] = data.get("subtitles", data if isinstance(data, list) else [])
+    return JSONResponse(content=result)
+
+
+@app.get("/api/session/{file_id}")
+async def get_session(file_id: str):
+    """Check if a session still exists and return its state."""
+    video_path = find_video(file_id)
+    if not video_path:
+        raise HTTPException(status_code=404, detail="Session introuvable")
+
+    subs_path = UPLOAD_DIR / f"{file_id}.json"
+    output_path = PROCESSED_DIR / f"{file_id}_subtitled.mp4"
+    job = jobs.get(file_id)
+
+    result = {"file_id": file_id, "video_exists": True}
+
+    if subs_path.exists():
+        with open(subs_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        result["subtitles"] = data.get("subtitles", data if isinstance(data, list) else [])
+        result["language"] = data.get("language", "unknown")
+        result["transcribed"] = True
+    else:
+        result["transcribed"] = False
+
+    if output_path.exists():
+        result["generated"] = True
+        result["size_mb"] = round(output_path.stat().st_size / (1024 * 1024), 1)
+    else:
+        result["generated"] = False
+
+    if job:
+        result["job_status"] = job["status"]
+        result["job_progress"] = job["progress"]
+        result["job_error"] = job.get("error")
+
+    return JSONResponse(content=result)
 
 
 def merge_compound_words(words: List[Dict]) -> List[Dict]:
@@ -312,6 +400,56 @@ async def cleanup(file_id: str):
             f.unlink()
             count += 1
     return {"deleted": count}
+
+
+@app.get("/api/videos")
+async def list_videos():
+    """List all uploaded videos with their processing state."""
+    videos = []
+    seen_ids = set()
+
+    # Scan uploads for video files
+    for ext in [".mp4", ".mov", ".avi", ".webm", ".mkv"]:
+        for path in UPLOAD_DIR.glob(f"*{ext}"):
+            file_id = path.stem
+            if file_id in seen_ids:
+                continue
+            seen_ids.add(file_id)
+
+            subs_path = UPLOAD_DIR / f"{file_id}.json"
+            output_path = PROCESSED_DIR / f"{file_id}_subtitled.mp4"
+            job = jobs.get(file_id)
+
+            video_info = {
+                "file_id": file_id,
+                "filename": path.name,
+                "size_mb": round(path.stat().st_size / (1024 * 1024), 1),
+                "created": path.stat().st_mtime,
+                "transcribed": subs_path.exists(),
+                "generated": output_path.exists(),
+            }
+
+            if output_path.exists():
+                video_info["output_size_mb"] = round(output_path.stat().st_size / (1024 * 1024), 1)
+
+            if subs_path.exists():
+                try:
+                    with open(subs_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    subs = data.get("subtitles", data if isinstance(data, list) else [])
+                    video_info["subtitle_count"] = len(subs)
+                except Exception:
+                    video_info["subtitle_count"] = 0
+
+            if job:
+                video_info["job_status"] = job["status"]
+                video_info["job_progress"] = job["progress"]
+
+            videos.append(video_info)
+
+    # Sort by creation date, newest first
+    videos.sort(key=lambda v: v["created"], reverse=True)
+    return JSONResponse(content={"videos": videos})
 
 
 @app.get("/health")

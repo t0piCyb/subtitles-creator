@@ -25,6 +25,7 @@
         }
 
         .header h1 { font-size: 1.2em; font-weight: 600; color: #fff; }
+        .header-actions { display: flex; gap: 8px; }
 
         /* --- UPLOAD VIEW --- */
         #view-upload {
@@ -263,6 +264,101 @@
         .btn-outline:hover:not(:disabled) { border-color: #646cff; color: #646cff; }
         .btn-sm { padding: 6px 12px; font-size: .8em; }
 
+        /* --- LIBRARY VIEW --- */
+        #view-library {
+            display: none;
+            padding: 24px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .library-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+        .library-header h2 { color: #fff; font-size: 1.2em; }
+
+        .video-card {
+            background: #1a1a1a;
+            border: 1px solid #2a2a2a;
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin-bottom: 12px;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 16px;
+            align-items: center;
+            transition: border-color .15s;
+        }
+
+        .video-card:hover { border-color: #444; }
+
+        .video-card-info h3 {
+            color: #fff;
+            font-size: .95em;
+            font-weight: 500;
+            margin-bottom: 6px;
+            word-break: break-all;
+        }
+
+        .video-card-meta {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .video-card-meta span {
+            font-size: .8em;
+            color: #888;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: .7em;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-transcribed { background: #1e3a5f; color: #60a5fa; }
+        .badge-generated { background: #14532d; color: #4ade80; }
+        .badge-pending { background: #3f3f46; color: #a1a1aa; }
+        .badge-processing { background: #4c1d95; color: #a78bfa; }
+
+        .video-card-actions {
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .btn-icon {
+            background: none;
+            border: 1px solid #333;
+            color: #aaa;
+            cursor: pointer;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: .8em;
+            font-weight: 500;
+            transition: all .15s;
+            font-family: 'Inter', sans-serif;
+            white-space: nowrap;
+        }
+
+        .btn-icon:hover { border-color: #646cff; color: #646cff; }
+        .btn-icon.danger:hover { border-color: #ef4444; color: #ef4444; }
+
+        .library-empty {
+            text-align: center;
+            color: #666;
+            padding: 60px 20px;
+            font-size: .95em;
+        }
+
         /* Toast */
         .toast {
             position: fixed;
@@ -346,6 +442,15 @@
             .progress-bar-container { height: 32px; }
 
             .processing-text { font-size: 1em; padding: 0 20px; text-align: center; }
+
+            #view-library { padding: 16px; }
+
+            .video-card {
+                grid-template-columns: 1fr;
+                gap: 12px;
+            }
+
+            .video-card-actions { justify-content: flex-start; }
         }
 
         /* Small phones */
@@ -365,6 +470,9 @@
 
 <div class="header">
     <h1>Sous-titres Creator</h1>
+    <div class="header-actions">
+        <button class="btn btn-sm btn-outline" id="btnLibrary" onclick="showLibrary()">Mes vidéos</button>
+    </div>
 </div>
 
 <!-- UPLOAD -->
@@ -419,6 +527,15 @@
     </div>
 </div>
 
+<!-- LIBRARY -->
+<div id="view-library">
+    <div class="library-header">
+        <h2>Mes vidéos</h2>
+        <button class="btn btn-sm btn-outline" onclick="showView('upload')">+ Nouvelle vidéo</button>
+    </div>
+    <div id="libraryList"></div>
+</div>
+
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
 
@@ -428,6 +545,95 @@ const $ = id => document.getElementById(id);
 let fileId = null;
 let subtitles = [];
 let originalSubtitles = [];
+
+// --- State persistence ---
+function saveState() {
+    if (!fileId) {
+        localStorage.removeItem('sc_state');
+        return;
+    }
+    localStorage.setItem('sc_state', JSON.stringify({
+        fileId,
+        subtitles,
+        originalSubtitles,
+        timestamp: Date.now(),
+    }));
+}
+
+async function restoreState() {
+    const raw = localStorage.getItem('sc_state');
+    if (!raw) return;
+
+    try {
+        const state = JSON.parse(raw);
+        // Expire after 24h
+        if (Date.now() - state.timestamp > 24 * 60 * 60 * 1000) {
+            localStorage.removeItem('sc_state');
+            return;
+        }
+
+        // Check if session still exists on server
+        const res = await fetch(`/api/session/${state.fileId}`);
+        if (!res.ok) {
+            localStorage.removeItem('sc_state');
+            return;
+        }
+
+        const session = await res.json();
+        fileId = state.fileId;
+
+        // If transcription is still running, show processing view and poll
+        if (session.job_status === 'transcribing') {
+            showView('processing');
+            $('processingText').textContent = 'Transcription en cours...';
+            pollTranscription(fileId);
+            return;
+        }
+
+        // If encoding is in progress, restore editor + poll generate
+        if (session.job_status === 'encoding') {
+            subtitles = state.subtitles || session.subtitles || [];
+            originalSubtitles = state.originalSubtitles || JSON.parse(JSON.stringify(subtitles));
+            $('videoPlayer').src = `/api/video/${fileId}`;
+            showView('editor');
+            renderSubtitles();
+            startSubtitleSync();
+            // Resume polling generate progress
+            const btn = $('btnGenerate');
+            const bar = $('progressBar');
+            const fill = $('progressFill');
+            const text = $('progressText');
+            btn.disabled = true;
+            btn.style.display = 'none';
+            bar.style.display = 'block';
+            pollProgress(fileId, btn, bar, fill, text);
+            return;
+        }
+
+        // Session has subtitles — restore editor
+        if (session.transcribed && session.subtitles) {
+            subtitles = state.subtitles || session.subtitles;
+            originalSubtitles = state.originalSubtitles || JSON.parse(JSON.stringify(session.subtitles));
+            $('videoPlayer').src = `/api/video/${fileId}`;
+            showView('editor');
+            renderSubtitles();
+            startSubtitleSync();
+
+            // If video was already generated, show download
+            if (session.generated) {
+                $('btnDownload').style.display = 'block';
+                $('btnGenerate').textContent = 'Régénérer la vidéo';
+                $('progressBar').style.display = 'block';
+                $('progressFill').style.width = '100%';
+                $('progressText').textContent = `Terminé (${session.size_mb} MB)`;
+            }
+            return;
+        }
+    } catch (e) {
+        console.warn('Failed to restore state:', e);
+        localStorage.removeItem('sc_state');
+    }
+}
 
 // --- Upload ---
 const uploadZone = $('uploadZone');
@@ -453,8 +659,6 @@ async function handleFile(file) {
     form.append('file', file);
 
     try {
-        $('processingText').textContent = 'Transcription en cours... (peut prendre quelques minutes)';
-
         const res = await fetch('/api/upload', { method: 'POST', body: form });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
@@ -463,19 +667,50 @@ async function handleFile(file) {
 
         const data = await res.json();
         fileId = data.file_id;
-        subtitles = data.subtitles;
-        originalSubtitles = JSON.parse(JSON.stringify(subtitles));
+        saveState();
 
-        $('videoPlayer').src = `/api/video/${fileId}`;
-
-        showView('editor');
-        renderSubtitles();
-        startSubtitleSync();
+        $('processingText').textContent = 'Transcription en cours...';
+        pollTranscription(fileId);
 
     } catch (err) {
         showToast(err.message);
         showView('upload');
     }
+}
+
+function pollTranscription(id) {
+    const poll = setInterval(async () => {
+        try {
+            const r = await fetch(`/api/transcribe-progress/${id}`);
+            if (!r.ok) return;
+            const data = await r.json();
+
+            if (data.error) {
+                clearInterval(poll);
+                showToast(data.error);
+                showView('upload');
+                return;
+            }
+
+            if (data.progress < 100) {
+                $('processingText').textContent = `Transcription en cours... ${data.progress}%`;
+                return;
+            }
+
+            // Done
+            clearInterval(poll);
+            subtitles = data.subtitles;
+            originalSubtitles = JSON.parse(JSON.stringify(subtitles));
+            saveState();
+
+            $('videoPlayer').src = `/api/video/${fileId}`;
+            showView('editor');
+            renderSubtitles();
+            startSubtitleSync();
+        } catch (e) {
+            // Network error — keep polling
+        }
+    }, 1000);
 }
 
 // --- Subtitle rendering ---
@@ -521,13 +756,14 @@ function parseTime(str) {
     return parseFloat(str) || 0;
 }
 
-function updateText(i, val) { subtitles[i].text = val; hideDownload(); }
-function updateTime(i, field, val) { subtitles[i][field] = parseTime(val); hideDownload(); }
+function updateText(i, val) { subtitles[i].text = val; hideDownload(); saveState(); }
+function updateTime(i, field, val) { subtitles[i][field] = parseTime(val); hideDownload(); saveState(); }
 
 function deleteSub(i) {
     subtitles.splice(i, 1);
     renderSubtitles();
     hideDownload();
+    saveState();
 }
 
 function addSubtitle() {
@@ -541,6 +777,7 @@ function addSubtitle() {
 
     renderSubtitles();
     hideDownload();
+    saveState();
 
     const items = $('subsList').querySelectorAll('.sub-item');
     const target = idx === -1 ? items[items.length - 1] : items[idx];
@@ -554,6 +791,7 @@ function resetSubtitles() {
     subtitles = JSON.parse(JSON.stringify(originalSubtitles));
     renderSubtitles();
     hideDownload();
+    saveState();
 }
 
 function seekTo(time) { $('videoPlayer').currentTime = time; }
@@ -670,6 +908,7 @@ function showView(name) {
     $('view-upload').style.display = name === 'upload' ? 'flex' : 'none';
     $('view-processing').style.display = name === 'processing' ? 'flex' : 'none';
     $('view-editor').style.display = name === 'editor' ? 'block' : 'none';
+    $('view-library').style.display = name === 'library' ? 'block' : 'none';
 }
 
 function resetAll() {
@@ -677,6 +916,7 @@ function resetAll() {
     fileId = null;
     subtitles = [];
     originalSubtitles = [];
+    localStorage.removeItem('sc_state');
     $('videoPlayer').src = '';
     $('subtitlePreview').textContent = '';
     $('btnDownload').style.display = 'none';
@@ -688,6 +928,118 @@ function resetAll() {
     if (syncInterval) clearInterval(syncInterval);
     showView('upload');
 }
+
+// --- Library ---
+async function showLibrary() {
+    showView('library');
+    $('libraryList').innerHTML = '<div class="library-empty">Chargement...</div>';
+
+    try {
+        const res = await fetch('/api/videos');
+        if (!res.ok) throw new Error('Erreur chargement');
+        const data = await res.json();
+
+        if (!data.videos.length) {
+            $('libraryList').innerHTML = '<div class="library-empty">Aucune vidéo pour le moment</div>';
+            return;
+        }
+
+        $('libraryList').innerHTML = data.videos.map(v => {
+            const date = new Date(v.created * 1000);
+            const dateStr = date.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+            let badges = '';
+            if (v.job_status === 'transcribing' || v.job_status === 'encoding') {
+                badges += `<span class="badge badge-processing">${v.job_status} ${v.job_progress || 0}%</span>`;
+            } else if (v.generated) {
+                badges += '<span class="badge badge-generated">Sous-titré</span>';
+            } else if (v.transcribed) {
+                badges += '<span class="badge badge-transcribed">Transcrit</span>';
+            } else {
+                badges += '<span class="badge badge-pending">Uploadé</span>';
+            }
+
+            let actions = '';
+            if (v.transcribed) {
+                actions += `<button class="btn-icon" onclick="openVideo('${v.file_id}')">Ouvrir</button>`;
+            }
+            if (v.generated) {
+                actions += `<button class="btn-icon" onclick="window.location.href='/api/download/${v.file_id}'">Télécharger</button>`;
+            }
+            actions += `<button class="btn-icon danger" onclick="deleteVideo('${v.file_id}')">Supprimer</button>`;
+
+            return `<div class="video-card" id="card-${v.file_id}">
+                <div class="video-card-info">
+                    <h3>${escapeHtml(v.filename)}</h3>
+                    <div class="video-card-meta">
+                        <span>${v.size_mb} MB</span>
+                        <span>${dateStr}</span>
+                        ${v.subtitle_count ? `<span>${v.subtitle_count} mots</span>` : ''}
+                        ${v.output_size_mb ? `<span>Sortie: ${v.output_size_mb} MB</span>` : ''}
+                        ${badges}
+                    </div>
+                </div>
+                <div class="video-card-actions">${actions}</div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        $('libraryList').innerHTML = '<div class="library-empty">Erreur de chargement</div>';
+    }
+}
+
+async function openVideo(id) {
+    try {
+        const res = await fetch(`/api/session/${id}`);
+        if (!res.ok) throw new Error('Session introuvable');
+        const session = await res.json();
+
+        fileId = id;
+        subtitles = session.subtitles || [];
+        originalSubtitles = JSON.parse(JSON.stringify(subtitles));
+        saveState();
+
+        $('videoPlayer').src = `/api/video/${fileId}`;
+        showView('editor');
+        renderSubtitles();
+        startSubtitleSync();
+
+        if (session.generated) {
+            $('btnDownload').style.display = 'block';
+            $('btnGenerate').textContent = 'Régénérer la vidéo';
+            $('progressBar').style.display = 'block';
+            $('progressFill').style.width = '100%';
+            $('progressText').textContent = `Terminé (${session.size_mb} MB)`;
+        }
+    } catch (e) {
+        showToast(e.message);
+    }
+}
+
+async function deleteVideo(id) {
+    if (!confirm('Supprimer cette vidéo et tous ses fichiers ?')) return;
+
+    try {
+        await fetch(`/api/cleanup/${id}`, { method: 'DELETE' });
+        const card = document.getElementById(`card-${id}`);
+        if (card) card.remove();
+        // If we just deleted the current session, clear state
+        if (fileId === id) {
+            fileId = null;
+            subtitles = [];
+            originalSubtitles = [];
+            localStorage.removeItem('sc_state');
+        }
+        // Check if list is now empty
+        if (!$('libraryList').children.length) {
+            $('libraryList').innerHTML = '<div class="library-empty">Aucune vidéo pour le moment</div>';
+        }
+    } catch (e) {
+        showToast('Erreur lors de la suppression');
+    }
+}
+
+// --- Restore state on page load ---
+restoreState();
 
 function showToast(msg) {
     const t = $('toast');
