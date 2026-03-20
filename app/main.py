@@ -504,15 +504,16 @@ def generate_ass(subtitles: List[Dict], output_path: Path, width: int = 1920, he
         play_res_x, play_res_y = 1080, 1920
         font_size = 68
         margin_v = 550
-        outline = 4
+        shadow = 3
     else:
         # Horizontal (16:9): standard
         play_res_x, play_res_y = 1920, 1080
         font_size = 90
         margin_v = 80
-        outline = 5
+        shadow = 4
 
     # ASS color format: &HAABBGGRR — Yellow = &H0000FFFF
+    # No outline (0), shadow only (bottom-right), BackColour = semi-transparent black for shadow
     header = f"""[Script Info]
 Title: Subtitles
 ScriptType: v4.00+
@@ -523,7 +524,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Montserrat,{font_size},&H0000FFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,{outline},2,2,10,10,{margin_v},1
+Style: Default,Montserrat,{font_size},&H0000FFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,0,{shadow},2,10,10,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
