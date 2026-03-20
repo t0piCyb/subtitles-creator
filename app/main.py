@@ -500,10 +500,10 @@ def generate_ass(subtitles: List[Dict], output_path: Path, width: int = 1920, he
     is_vertical = height > width
 
     if is_vertical:
-        # Vertical (9:16): smaller font, lower position, PlayRes matches vertical
+        # Vertical (9:16): raised high to avoid YouTube/TikTok UI overlay
         play_res_x, play_res_y = 1080, 1920
         font_size = 68
-        margin_v = 250
+        margin_v = 550
         outline = 4
     else:
         # Horizontal (16:9): standard
@@ -523,7 +523,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Slabo 27px,{font_size},&H0000FFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{outline},2,2,10,10,{margin_v},1
+Style: Default,Montserrat,{font_size},&H0000FFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,{outline},2,2,10,10,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

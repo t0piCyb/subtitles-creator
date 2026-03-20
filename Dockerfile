@@ -8,10 +8,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install Slabo 27px font
-RUN mkdir -p /usr/share/fonts/truetype/slabo && \
-    curl -fsSL -o /usr/share/fonts/truetype/slabo/Slabo27px-Regular.ttf \
-    "https://raw.githubusercontent.com/google/fonts/main/ofl/slabo27px/Slabo27px-Regular.ttf" && \
+# Install Montserrat font
+RUN mkdir -p /usr/share/fonts/truetype/montserrat && \
+    curl -fsSL -o /usr/share/fonts/truetype/montserrat/Montserrat-Bold.ttf \
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf" && \
     fc-cache -f -v
 
 COPY requirements.txt .
